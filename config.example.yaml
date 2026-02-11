@@ -1,0 +1,59 @@
+# HMHA - Configuration
+# Copy this file to config.yaml and fill in your details.
+# Your API key goes in .env (never here).
+
+user_profile:
+  name: "Your Name"
+  education: "BS Computer Science, University (Expected 2027)"
+  experience_summary: >
+    Describe your experience in 2-3 sentences. What have you built?
+    What technologies have you worked with? What kind of problems
+    have you solved?
+  skills:
+    - Python
+    - TypeScript
+    - React
+    - Node.js
+    - SQL
+    - Docker
+  interests: >
+    What are you passionate about? What kind of work excites you?
+    What do you want to learn or build next?
+  location_preference: "San Francisco Bay Area (Summer 2026)"
+  resume_highlights:
+    - "Built X that achieved Y at Z"
+    - "Developed A used by B users"
+    - "Published research on C"
+  personality_notes: >
+    Optional: describe your working style, values, or what makes
+    you unique. This helps generate more authentic messages.
+
+search_filters:
+  job_type: "intern"           # fulltime, intern, contract, any
+  roles:                       # Leave empty for all roles
+    - "software-engineer"
+    - "full-stack-engineer"
+    - "backend-engineer"
+    - "frontend-engineer"
+    - "data-scientist"
+    - "machine-learning-engineer"
+  remote: "any"                # any, only, yes, no
+  location: "San Francisco"
+  company_size: "any"          # any, seed, small, medium, large
+  industries: []               # Empty = all. Options: B2B, Consumer, Healthcare, etc.
+  visa_not_required: "any"     # any, true, false
+  sort_by: "most_active"       # most_active, created_desc, recommended
+
+message_style: >
+  Conversational but professional. Show genuine interest in the specific
+  company and product. Reference something specific about what they're
+  building. Keep it concise -- founders are busy. Sound like a smart
+  student who's done their homework, not a form letter.
+
+settings:
+  max_applications_per_session: 25
+  delay_between_applications:
+    min_seconds: 8
+    max_seconds: 20
+  browser_headless: false      # Keep false so you can see the browser
+  browser_slow_mo: 50          # ms between Playwright actions

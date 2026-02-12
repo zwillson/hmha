@@ -1,4 +1,4 @@
-# HMHA
+# HMHA: Half-Man, Half-Application
 
 Automated job application tool for YC's [Work at a Startup](https://www.workatastartup.com). Scrapes job listings, generates personalized founder messages using Claude, and lets you review each one before sending.
 

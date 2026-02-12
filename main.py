@@ -174,6 +174,21 @@ async def run_main(args: argparse.Namespace) -> None:
                 # Scrape full job details
                 job = await scraper.scrape_job_detail(stub["url"])
 
+                # Filter by allowed locations (skip international jobs)
+                allowed = config.search_filters.allowed_locations
+                if allowed and job.location:
+                    location_lower = job.location.lower()
+                    if not any(loc.lower() in location_lower for loc in allowed):
+                        logger.info(
+                            "Skipping %s at %s — location '%s' not in allowed list.",
+                            job.title, job.company.name, job.location,
+                        )
+                        tracker.record(Application(
+                            job=job, message="", status=ApplicationStatus.SKIPPED,
+                            notes=f"location_filtered: {job.location}",
+                        ))
+                        continue
+
                 # Check if already applied on the page itself
                 if await applicant._is_already_applied():
                     logger.info("Already applied to %s (on-page). Skipping.", job.title)
@@ -183,23 +198,26 @@ async def run_main(args: argparse.Namespace) -> None:
                     ))
                     continue
 
-                # Generate personalized message
+                # Summarize company/role info for display + generate message in parallel
                 try:
-                    message = await generator.generate_message(
-                        job=job,
-                        user_profile=config.user_profile,
-                        style_notes=config.message_style,
+                    import asyncio as _asyncio
+                    (about_summary, desc_summary), message = await _asyncio.gather(
+                        generator.summarize_for_display(job),
+                        generator.generate_message(
+                            job=job,
+                            user_profile=config.user_profile,
+                            style_notes=config.message_style,
+                        ),
                     )
+                    job.about_summary = about_summary
+                    job.description_summary = desc_summary
                 except Exception as e:
                     logger.warning("AI generation failed: %s. Using fallback.", e)
                     message = generator.generate_fallback(job, config.user_profile)
 
                 # Review the message
                 decision, final_message = reviewer.review(
-                    job_title=job.title,
-                    company_name=job.company.name,
-                    company_description=job.company.description,
-                    culture_notes=job.culture_notes,
+                    job=job,
                     message=message,
                     job_number=i,
                     total_jobs=total_to_process,

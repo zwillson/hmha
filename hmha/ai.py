@@ -7,6 +7,7 @@ generates a tailored application message that sounds human-written.
 from __future__ import annotations
 
 import logging
+import re
 
 from anthropic import AsyncAnthropic
 
@@ -20,25 +21,49 @@ SYSTEM_PROMPT = """You are helping a student write a short, personalized message
 for a startup internship on Y Combinator's Work at a Startup platform. This message goes \
 directly to the founding team.
 
+STRUCTURE (follow this order, adapt wording naturally to each company):
+1. GREETING: "Hi [founder name(s) if provided, otherwise just 'Hi']"
+2. PERSONALIZED HOOK: One or two sentences about why this company's MISSION or GOAL interests you. \
+Focus on the PROBLEM they're solving or the OUTCOME they're working toward -- NOT their tech stack. \
+Connect it to something about the applicant's own experience or interests if possible. \
+For example: "I saw you're trying to make X easier for Y -- I ran into that exact problem when I was doing Z" \
+or "The idea of using AI to solve [specific problem] is interesting to me because [personal connection]." \
+Keep it matter-of-fact. No flattery, no superlatives.
+3. BACKGROUND: Introduce yourself. Engineering Science at University of Toronto, graduating \
+soon, looking for a summer internship. Mention relevant experience: quant trader at RBC \
+Capital Markets (4 months), AI Engineer at RBC (12 months), API Tester at Scotiabank, \
+and computer vision research paper in progress. Weave these in naturally -- don't just list them. \
+Emphasize whichever experience is most relevant to THIS company.
+4. SKILLS: Mention proficiency in Python and machine learning, familiarity with Java and JS. \
+Only mention what's relevant to the role.
+5. AVAILABILITY: Available June through August, looking for a role where you can learn a ton.
+6. CLOSING: "Would love to get in touch!" followed by LinkedIn URL on a new line.
+
 RULES:
-- Write EXACTLY 50-150 words. Count carefully.
 - Write in first person as the applicant.
-- Be conversational but professional. No corporate speak.
-- Reference something SPECIFIC about the company or product -- not generic praise.
-- Connect the applicant's experience to what the company actually needs.
-- Show genuine curiosity about the problem space.
-- Do NOT use phrases like "I am excited to apply" or "I believe I would be a great fit".
-- Do NOT list skills in bullet points. Weave them into a narrative.
-- If the company mentions specific values or personality traits they want, subtly reflect those.
-- End with a forward-looking statement (what you want to build/learn), not a plea.
-- Sound like a real person wrote this, not a cover letter generator.
-- Output ONLY the message text. No subject line, no greeting header, no sign-off."""
+- Keep the tone casual and direct. Like a text to someone you respect, not a cover letter.
+- NEVER use these words/phrases: "exciting", "passionate", "thrilled", "amazing", "incredible", \
+"love what you're building", "really resonates", "deeply impressed", "I am excited to apply", \
+"I believe I would be a great fit", "caught my eye", "stands out". These all scream AI.
+- The hook should focus on the company's GOAL or MISSION, not their tech. \
+Write it like "I saw you're trying to solve X for Y -- that's interesting because Z" -- \
+not "Your groundbreaking work on X is truly inspiring" or "Your use of React and Kubernetes is impressive".
+- Sound like a 22-year-old engineering student, not a LinkedIn influencer.
+- Output ONLY the message text. No subject line."""
 
 FALLBACK_TEMPLATE = (
-    "Hi! I'm {name}, a student with experience in {skills}. "
-    "I came across {company} and I'm really interested in the {role} role. "
-    "[EDIT THIS: mention something specific about what they're building]. "
-    "I'd love to chat about how I can contribute this summer."
+    "Hi!\n\n"
+    "My name is {name}. Your company looks really exciting to me because "
+    "[EDIT THIS: insert personal, specialized reason].\n\n"
+    "I'm graduating University of Toronto from the Engineering Science program "
+    "looking for an internship at a startup this coming summer. I have spent "
+    "4 months as a quant trader at RBC Capital Markets, and previously I spent "
+    "12 months as an AI Engineer there. Before that, I was an API Tester at "
+    "Scotiabank and I am working on getting my computer vision research paper published.\n"
+    "I am proficient in Python, machine learning, and also familiar with Java and JS.\n\n"
+    "I am available June through August, and looking for a role where I can learn "
+    "a ton in the process.\n\n"
+    "Would love to get in touch! You can learn more about me here: {linkedin}"
 )
 
 
@@ -88,13 +113,66 @@ class MessageGenerator:
 
     def generate_fallback(self, job: Job, user_profile: UserProfile) -> str:
         """Return a template message when the API is unavailable."""
-        top_skills = ", ".join(user_profile.skills[:3])
         return FALLBACK_TEMPLATE.format(
             name=user_profile.name,
-            skills=top_skills,
             company=job.company.name,
             role=job.title,
+            linkedin=user_profile.linkedin,
         )
+
+    async def summarize_for_display(self, job: Job) -> tuple[str, str]:
+        """Summarize the company about section and role description for terminal display.
+
+        Returns (about_summary, description_summary) — each a short paragraph.
+        Uses a fast, cheap call to Claude.
+        """
+        parts = []
+        if job.company.description:
+            parts.append(f"COMPANY ABOUT SECTION (raw scraped text):\n{job.company.description[:1500]}")
+        if job.description:
+            parts.append(f"ROLE DESCRIPTION (raw scraped text):\n{job.description[:1500]}")
+        if job.requirements:
+            parts.append(f"REQUIREMENTS:\n{job.requirements[:500]}")
+
+        if not parts:
+            return "", ""
+
+        prompt = "\n\n".join(parts) + """
+
+Summarize the above into two short sections for quick reading:
+
+1. ABOUT THE COMPANY (2-3 sentences max): What does this company do? What problem are they solving? What's their product?
+
+2. ROLE SUMMARY (2-3 sentences max): What will this person actually do day-to-day? What are the key requirements?
+
+Keep it concise and factual. No filler words. Write in third person.
+Format your response exactly like:
+ABOUT: [your summary]
+ROLE: [your summary]"""
+
+        try:
+            response = await self._client.messages.create(
+                model=self._model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text.strip()
+
+            about_summary = ""
+            role_summary = ""
+
+            about_match = re.search(r"ABOUT:\s*(.+?)(?=ROLE:|$)", text, re.DOTALL)
+            if about_match:
+                about_summary = about_match.group(1).strip()
+
+            role_match = re.search(r"ROLE:\s*(.+?)$", text, re.DOTALL)
+            if role_match:
+                role_summary = role_match.group(1).strip()
+
+            return about_summary, role_summary
+        except Exception as e:
+            logger.debug("Summarization failed: %s", e)
+            return "", ""
 
     def _build_prompt(self, job: Job, user_profile: UserProfile, style_notes: str) -> str:
         """Construct the user prompt with all context for Claude."""
@@ -132,10 +210,14 @@ class MessageGenerator:
             sections.append(f"\nWHAT I'M LOOKING FOR: {user_profile.interests}")
         if user_profile.personality_notes:
             sections.append(f"\nMY STYLE: {user_profile.personality_notes}")
+        if user_profile.availability:
+            sections.append(f"\nAVAILABILITY: {user_profile.availability}")
+        if user_profile.linkedin:
+            sections.append(f"\nLINKEDIN URL: {user_profile.linkedin}")
         if style_notes:
             sections.append(f"\nTONE GUIDANCE: {style_notes}")
 
-        sections.append("\nWrite the message now. 50-150 words, specific to this company.")
+        sections.append("\nWrite the message now. Follow the structure from the system prompt. Be specific to this company.")
         return "\n".join(sections)
 
     async def close(self) -> None:

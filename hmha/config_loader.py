@@ -20,6 +20,8 @@ class UserProfile:
     location_preference: str
     resume_highlights: list[str]
     personality_notes: str = ""
+    linkedin: str = ""
+    availability: str = ""
 
 
 @dataclass
@@ -32,6 +34,7 @@ class SearchFilters:
     industries: list[str] = field(default_factory=list)
     visa_not_required: str = "any"
     sort_by: str = "most_active"
+    allowed_locations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +79,8 @@ def load_config(config_path: Path) -> Config:
         location_preference=prof.get("location_preference", ""),
         resume_highlights=prof.get("resume_highlights", []),
         personality_notes=prof.get("personality_notes", ""),
+        linkedin=prof.get("linkedin", ""),
+        availability=prof.get("availability", ""),
     )
 
     # Parse search filters
@@ -89,6 +94,7 @@ def load_config(config_path: Path) -> Config:
         industries=filt.get("industries", []),
         visa_not_required=filt.get("visa_not_required", "any"),
         sort_by=filt.get("sort_by", "most_active"),
+        allowed_locations=filt.get("allowed_locations", []),
     )
 
     # Parse settings

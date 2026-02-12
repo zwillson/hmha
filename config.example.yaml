@@ -53,7 +53,7 @@ message_style: >
 settings:
   max_applications_per_session: 25
   delay_between_applications:
-    min_seconds: 8
+    min_seconds: 1
     max_seconds: 20
   browser_headless: false      # Keep false so you can see the browser
   browser_slow_mo: 50          # ms between Playwright actions

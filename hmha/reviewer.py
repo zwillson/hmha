@@ -4,10 +4,14 @@ Shows job context and the generated message, then lets the user
 approve, edit, skip, or quit before each application is sent.
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 import tempfile
 from enum import Enum
+
+from hmha.models import Job
 
 
 class ReviewDecision(Enum):
@@ -20,10 +24,14 @@ class ReviewDecision(Enum):
 # ANSI color helpers
 BOLD = "\033[1m"
 DIM = "\033[2m"
+RED = "\033[91m"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 CYAN = "\033[96m"
+MAGENTA = "\033[95m"
 RESET = "\033[0m"
+
+NOT_FOUND = f"{DIM}{RED}Couldn't be found by HMHA{RESET}"
 
 
 class MessageReviewer:
@@ -31,10 +39,7 @@ class MessageReviewer:
 
     def review(
         self,
-        job_title: str,
-        company_name: str,
-        company_description: str,
-        culture_notes: str,
+        job: Job,
         message: str,
         job_number: int,
         total_jobs: int,
@@ -45,7 +50,7 @@ class MessageReviewer:
             (decision, message) where message may be edited by the user.
         """
         self._display_header(job_number, total_jobs)
-        self._display_job_context(job_title, company_name, company_description, culture_notes)
+        self._display_job_context(job)
         self._display_message(message)
 
         while True:
@@ -71,26 +76,87 @@ class MessageReviewer:
         print(f"{BOLD}{CYAN} Job {job_number}/{total_jobs}{RESET}")
         print(f"{'=' * 60}")
 
-    def _display_job_context(
-        self,
-        job_title: str,
-        company_name: str,
-        company_description: str,
-        culture_notes: str,
-    ) -> None:
-        print(f"\n{BOLD}Role:{RESET}    {job_title}")
-        print(f"{BOLD}Company:{RESET} {company_name}")
-        if company_description:
-            # Show first ~200 chars of company description
-            desc = company_description[:200]
-            if len(company_description) > 200:
+    def _display_job_context(self, job: Job) -> None:
+        company = job.company
+
+        # Company name + YC batch
+        name_line = company.name if company.name and company.name != "Unknown" else NOT_FOUND
+        if company.yc_batch:
+            name_line += f" ({company.yc_batch})"
+        print(f"\n{BOLD}Company:{RESET}    {name_line}")
+
+        # Role
+        role_line = job.title if job.title and job.title != "Unknown Role" else NOT_FOUND
+        print(f"{BOLD}Role:{RESET}       {role_line}")
+
+        # Location
+        print(f"{BOLD}Location:{RESET}   {job.location or NOT_FOUND}")
+
+        # Industry & size
+        industry = company.industry or NOT_FOUND
+        size = f"{company.size} people" if company.size else NOT_FOUND
+        print(f"{BOLD}Industry:{RESET}   {industry}")
+        print(f"{BOLD}Size:{RESET}       {size}")
+
+        # Salary
+        print(f"{BOLD}Salary:{RESET}     {job.salary_range or NOT_FOUND}")
+
+        # Founders
+        print(f"{BOLD}Founders:{RESET}   ", end="")
+        if company.founders:
+            founder_strs = []
+            for f in company.founders:
+                if f.linkedin:
+                    founder_strs.append(f"{f.name} ({DIM}{f.linkedin}{RESET})")
+                else:
+                    founder_strs.append(f.name)
+            print(", ".join(founder_strs))
+        else:
+            print(NOT_FOUND)
+
+        # Website (clickable link for the user)
+        print(f"{BOLD}Website:{RESET}    {DIM}{company.website or NOT_FOUND}{RESET}")
+
+        # Job URL
+        print(f"{BOLD}Job URL:{RESET}    {DIM}{job.url or NOT_FOUND}{RESET}")
+
+        # About the company (use AI summary if available, fall back to raw)
+        print(f"\n{BOLD}{MAGENTA}About the company:{RESET}")
+        if job.about_summary:
+            print(f"  {job.about_summary}")
+        elif company.description:
+            print(f"  {DIM}{company.description[:500]}{RESET}")
+        else:
+            print(f"  {NOT_FOUND}")
+
+        # Role description (use AI summary if available, fall back to raw)
+        print(f"\n{BOLD}{MAGENTA}Role summary:{RESET}")
+        if job.description_summary:
+            print(f"  {job.description_summary}")
+        elif job.description:
+            desc = job.description[:500]
+            if len(job.description) > 500:
                 desc += "..."
-            print(f"{BOLD}About:{RESET}   {DIM}{desc}{RESET}")
-        if culture_notes:
-            notes = culture_notes[:150]
-            if len(culture_notes) > 150:
-                notes += "..."
-            print(f"{BOLD}Culture:{RESET} {DIM}{notes}{RESET}")
+            print(f"  {DIM}{desc}{RESET}")
+        else:
+            print(f"  {NOT_FOUND}")
+
+        # Requirements
+        print(f"\n{BOLD}{MAGENTA}Requirements:{RESET}")
+        if job.requirements:
+            reqs = job.requirements[:400]
+            if len(job.requirements) > 400:
+                reqs += "..."
+            print(f"  {DIM}{reqs}{RESET}")
+        else:
+            print(f"  {NOT_FOUND}")
+
+        # Culture
+        print(f"\n{BOLD}{MAGENTA}Culture/Values:{RESET}")
+        if job.culture_notes:
+            print(f"  {DIM}{job.culture_notes}{RESET}")
+        else:
+            print(f"  {NOT_FOUND}")
 
     def _display_message(self, message: str) -> None:
         word_count = len(message.split())
@@ -124,13 +190,13 @@ class MessageReviewer:
         """Simple inline editing: user types a new message."""
         print(f"\n{DIM}Type your new message (or press Enter to keep current):{RESET}")
         lines = []
-        print(f"{DIM}(Enter a blank line to finish){RESET}")
+        print(f"{DIM}(Type {BOLD}:done{RESET}{DIM} on its own line to finish. Blank lines are preserved.){RESET}")
         while True:
             line = input()
-            if line == "":
+            if line.strip().lower() == ":done":
                 break
             lines.append(line)
 
         if lines:
-            return " ".join(lines)
+            return "\n".join(lines)
         return message

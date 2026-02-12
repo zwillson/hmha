@@ -15,6 +15,12 @@ class ApplicationStatus(Enum):
 
 
 @dataclass
+class Founder:
+    name: str
+    linkedin: str = ""
+
+
+@dataclass
 class Company:
     name: str
     description: str
@@ -22,6 +28,8 @@ class Company:
     industry: str = ""
     size: str = ""
     url: str = ""
+    website: str = ""
+    founders: list[Founder] = field(default_factory=list)
 
 
 @dataclass
@@ -37,6 +45,8 @@ class Job:
     role_category: str = ""
     salary_range: str = ""
     culture_notes: str = ""
+    description_summary: str = ""
+    about_summary: str = ""
 
 
 @dataclass

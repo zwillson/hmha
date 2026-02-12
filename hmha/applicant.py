@@ -135,8 +135,8 @@ class JobApplicant:
         # Clear any placeholder/existing text
         await textarea.fill("")
 
-        # Type with human-like speed (30-60ms per keystroke)
-        await textarea.type(message, delay=40)
+        # Type quickly (5ms per keystroke — fast but still triggers React events)
+        await textarea.type(message, delay=5)
 
         # Verify the text was entered
         value = await textarea.input_value()

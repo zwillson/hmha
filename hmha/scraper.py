@@ -27,44 +27,133 @@ class JobScraper:
     async def scrape_job_listings(self, url: str, max_jobs: int = 100) -> list[dict]:
         """Navigate to filtered jobs URL and extract job stubs.
 
-        Returns a list of lightweight dicts: {job_id, title, company_name, url}.
+        Returns a list of lightweight dicts: {job_id, title, company_name, company_blurb, url}.
         These are used to decide which jobs to visit in detail.
+
+        On the /companies page, the layout is:
+          - Company cards, each containing a company name/link + its job postings.
+          - Job links are a[href*='/jobs/'] inside each card.
+          - Company name can be found by traversing up from the job link
+            to find the nearest heading or a[href*='/companies/'] link.
+
+        Filters are applied via URL params (built by filters.py), not by
+        interacting with sidebar dropdowns.
         """
         logger.info("Navigating to jobs page: %s", url)
         await self._page.goto(url, wait_until="domcontentloaded")
 
         # Scroll to load more jobs (the page uses infinite scroll / load-more)
-        await self._scroll_to_load_all(max_scrolls=15)
+        await self._scroll_to_load_all(max_scrolls=25)
 
-        # Extract job links from the page
-        job_links = await self._page.query_selector_all(selectors.JOB_ROW)
-        logger.info("Found %d job links on listing page.", len(job_links))
+        # Use a single JS call to extract ALL job stubs with their company context.
+        # For each job link, we traverse up the DOM to find the parent company card
+        # and extract the company name + blurb from it.
+        raw_stubs = await self._page.evaluate("""() => {
+            const results = [];
+            const jobLinks = document.querySelectorAll("a[href*='/jobs/']");
+
+            for (const link of jobLinks) {
+                const href = link.getAttribute('href') || '';
+                const title = (link.textContent || '').trim();
+
+                if (!href.includes('/jobs/')) continue;
+
+                // Extract company name by traversing up to find the company card
+                let companyName = '';
+                let companyBlurb = '';
+                let node = link;
+
+                // Strategy 1: Look for a[href*='/companies/'] link in an ancestor
+                for (let i = 0; i < 15; i++) {
+                    node = node.parentElement;
+                    if (!node) break;
+
+                    // Look for a company name link (usually links to /companies/slug)
+                    if (!companyName) {
+                        const compLink = node.querySelector("a[href*='/companies/']");
+                        if (compLink) {
+                            // The company link text is the company name
+                            const name = (compLink.textContent || '').trim();
+                            // Filter out long text (probably not just the name)
+                            if (name && name.length > 0 && name.length < 80) {
+                                companyName = name;
+                            }
+                            // Also try getting company name from the href slug
+                            if (!companyName) {
+                                const slugMatch = compLink.href.match(/\\/companies\\/([^/]+)/);
+                                if (slugMatch) {
+                                    companyName = slugMatch[1].replace(/-/g, ' ');
+                                }
+                            }
+                        }
+                    }
+
+                    // Look for a blurb in <p> tags
+                    if (!companyBlurb) {
+                        const paragraphs = node.querySelectorAll('p');
+                        for (const p of paragraphs) {
+                            const t = p.textContent.trim();
+                            if (t.length > 15 && t.length < 200 && t.includes(' ')
+                                && !t.match(/^(fulltime|parttime|intern|remote|contract)/i)) {
+                                companyBlurb = t;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (companyName && companyBlurb) break;
+                }
+
+                // Strategy 2: Extract company name from the href itself
+                // URL pattern: /companies/company-slug/jobs/ID
+                if (!companyName) {
+                    const hrefMatch = href.match(/\\/companies\\/([^/]+)/);
+                    if (hrefMatch) {
+                        companyName = hrefMatch[1].replace(/-/g, ' ');
+                    }
+                }
+
+                results.push({
+                    href: href,
+                    title: title,
+                    companyName: companyName,
+                    companyBlurb: companyBlurb,
+                });
+            }
+            return results;
+        }""")
+
+        logger.info("Found %d job links on listing page.", len(raw_stubs))
 
         jobs: list[dict] = []
         seen_ids: set[str] = set()
 
-        for link in job_links[:max_jobs]:
-            try:
-                href = await link.get_attribute("href") or ""
-                title = (await link.inner_text()).strip()
+        for stub in raw_stubs[:max_jobs]:
+            href = stub.get("href", "")
+            title = stub.get("title", "").strip()
+            company_name = stub.get("companyName", "").strip()
+            company_blurb = stub.get("companyBlurb", "").strip()
 
-                # Extract job ID from URL like /jobs/12345
-                job_id = self._extract_job_id(href)
-                if not job_id or job_id in seen_ids:
-                    continue
-                seen_ids.add(job_id)
-
-                # Build full URL
-                full_url = href if href.startswith("http") else f"https://www.workatastartup.com{href}"
-
-                jobs.append({
-                    "job_id": job_id,
-                    "title": title,
-                    "url": full_url,
-                })
-            except Exception as e:
-                logger.debug("Failed to parse job link: %s", e)
+            # Extract job ID
+            job_id = self._extract_job_id(href)
+            if not job_id or job_id in seen_ids:
                 continue
+            seen_ids.add(job_id)
+
+            # Build full URL
+            full_url = href if href.startswith("http") else f"https://www.workatastartup.com{href}"
+
+            # Title-case the company name if it looks like a slug
+            if company_name and "-" not in company_name and company_name[0].islower():
+                company_name = company_name.title()
+
+            jobs.append({
+                "job_id": job_id,
+                "title": title,
+                "company_name": company_name,
+                "company_blurb": company_blurb,
+                "url": full_url,
+            })
 
         logger.info("Extracted %d unique job stubs.", len(jobs))
         return jobs
@@ -112,17 +201,33 @@ class JobScraper:
 
         # --- Job title: try selectors and URL ---
         title = ""
-        # Try getting from a heading that isn't the company name
+
+        # Known section headers that are NOT job titles
+        _section_headers = {
+            "about", "about us", "about you", "about the company", "about the role",
+            "the role", "description", "overview", "requirements",
+            "qualifications", "apply", "benefits", "culture", "values",
+            "what you'll do", "what we're looking for", "responsibilities",
+            "who we are", "who you are", "what you bring",
+            "interview process", "other jobs", "similar jobs",
+            "our stack", "tech stack", "perks", "compensation",
+        }
+
+        # Try getting from a heading that isn't the company name or a section header
         all_h1s = await self._page.query_selector_all("h1, h2")
         for heading in all_h1s:
             text = (await heading.inner_text()).strip()
-            if text and text != company_name and len(text) < 100:
-                title = text
-                break
+            if not text or text == company_name or len(text) > 100:
+                continue
+            if text.lower() in _section_headers:
+                continue
+            title = text
+            break
 
         # Fallback: extract from URL slug
+        # Handles both /jobs/ID-slug-title and /jobs/84041 formats
         if not title:
-            title_match = re.search(r"/jobs/[^-]+-(.+)$", job_url)
+            title_match = re.search(r"/jobs/[A-Za-z0-9]+-(.+)$", job_url)
             if title_match:
                 title = title_match.group(1).replace("-", " ").title()
 
@@ -191,12 +296,12 @@ class JobScraper:
             culture_notes=culture_notes,
         )
 
-    async def _scroll_to_load_all(self, max_scrolls: int = 15) -> None:
+    async def _scroll_to_load_all(self, max_scrolls: int = 25) -> None:
         """Scroll the page and click 'Load more' to reveal all job cards."""
         for i in range(max_scrolls):
             previous_height = await self._page.evaluate("document.body.scrollHeight")
             await self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(0.3)  # minimal wait for DOM to update
+            await asyncio.sleep(1.0)  # wait for lazy-loaded content to render
 
             # Try clicking any "load more" or "show more" button
             for btn_selector in [selectors.LOAD_MORE_BUTTON, selectors.SHOW_MORE_JOBS]:
@@ -204,7 +309,7 @@ class JobScraper:
                     btn = await self._page.query_selector(btn_selector)
                     if btn and await btn.is_visible():
                         await btn.click()
-                        await asyncio.sleep(0.3)
+                        await asyncio.sleep(1.5)  # wait for new content after button click
                 except Exception:
                     pass
 
@@ -262,8 +367,28 @@ class JobScraper:
         """Extract location, job type, and salary from the page.
 
         Uses a single JS call to gather all chip/tag text, then filters in Python.
+        Validates location text to avoid garbage like 'assistance' or 'compensation'.
         """
         meta: dict[str, str] = {}
+
+        # Known location keywords — only accept text containing these
+        _LOCATION_KEYWORDS = [
+            "remote", "san francisco", "sf", "new york", "nyc",
+            "los angeles", "la", "austin", "seattle", "boston",
+            "chicago", "denver", "miami", "india", "london",
+            "berlin", "toronto", "paris", "bangalore", "bengaluru",
+            "bay area", "palo alto", "mountain view", "sunnyvale",
+            "cupertino", "menlo park", "redwood city",
+            "washington", "dc", "portland", "atlanta", "dallas",
+            "houston", "philadelphia", "san jose", "san diego",
+            "united states", "us", "usa", "canada", "uk",
+            ", ca", ", ny", ", tx", ", wa",
+        ]
+
+        def _is_valid_location(text: str) -> bool:
+            """Check if text actually looks like a location."""
+            lower = text.lower()
+            return any(loc in lower for loc in _LOCATION_KEYWORDS)
 
         # Single JS call — get all text from metadata-like elements at once
         try:
@@ -285,14 +410,7 @@ class JobScraper:
 
             for text in chip_texts:
                 lower = text.lower()
-                if not meta.get("location") and any(
-                    loc in lower for loc in [
-                        "remote", "san francisco", "sf", "new york", "nyc",
-                        "los angeles", "la", "austin", "seattle", "boston",
-                        "chicago", "denver", "miami", "india", "london",
-                        "berlin", "toronto", "paris", "bangalore",
-                    ]
-                ):
+                if not meta.get("location") and _is_valid_location(text):
                     meta["location"] = text
                 elif not meta.get("job_type") and any(
                     t in lower for t in ["full-time", "part-time", "intern", "contract", "fulltime"]
@@ -303,17 +421,20 @@ class JobScraper:
         except Exception as e:
             logger.debug("DOM metadata extraction failed: %s", e)
 
-        # Regex fallback for location
+        # Regex fallback for location — only accept known location patterns
         if not meta.get("location"):
             loc_patterns = [
+                # Only match if the captured text contains a known location keyword
                 r"(?:Location|Based in|Office)[:\s]+([^\n]{3,50})",
-                r"((?:San Francisco|New York|Remote|Austin|Seattle|Boston|Los Angeles|Chicago)[^\n]{0,30})",
+                r"((?:San Francisco|New York|Remote|Austin|Seattle|Boston|Los Angeles|Chicago|Palo Alto|Mountain View)[^\n]{0,30})",
             ]
             for pat in loc_patterns:
                 match = re.search(pat, page_text, re.IGNORECASE)
                 if match:
-                    meta["location"] = match.group(1).strip()
-                    break
+                    candidate = match.group(1).strip()
+                    if _is_valid_location(candidate):
+                        meta["location"] = candidate
+                        break
 
         # Regex fallback for salary
         if not meta.get("salary"):
@@ -535,6 +656,11 @@ class JobScraper:
 
     @staticmethod
     def _extract_job_id(url: str) -> str | None:
-        """Extract numeric job ID from a URL like /jobs/12345."""
-        match = re.search(r"/jobs/(\d+)", url)
+        """Extract job ID from a URL like /companies/foo/jobs/2B4RxLG-title or /jobs/12345.
+
+        WAAS uses alphanumeric IDs (e.g. 2B4RxLG, 8uytDI0) not just numeric ones.
+        The URL pattern is: /jobs/{ID}-{slug} or /jobs/{ID}
+        """
+        # Match the full alphanumeric ID segment after /jobs/
+        match = re.search(r"/jobs/([A-Za-z0-9]+)", url)
         return match.group(1) if match else None

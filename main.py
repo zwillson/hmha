@@ -140,6 +140,8 @@ async def run_main(args: argparse.Namespace) -> None:
             industries=config.search_filters.industries,
             visa_not_required=config.search_filters.visa_not_required,
             sort_by=config.search_filters.sort_by,
+            commitment=config.search_filters.commitment,
+            role_categories=config.search_filters.role_categories,
         )
         logger.info("Filtered URL: %s", url)
 
@@ -152,93 +154,156 @@ async def run_main(args: argparse.Namespace) -> None:
             logger.warning("No jobs found! Check your filters in config.yaml.")
             return
 
-        # Filter out already-applied jobs
-        fresh_jobs = [j for j in job_stubs if not tracker.has_applied(j["job_id"])]
-        logger.info("%d jobs remaining after filtering applied ones.", len(fresh_jobs))
+        # Filter out already-seen jobs (sent, dry_run, or skipped in previous runs)
+        # --show-seen: only filter out actually sent ones, re-show dry_run/skipped
+        if args.show_seen:
+            fresh_jobs = [j for j in job_stubs if not tracker.has_applied(j["job_id"])]
+            logger.info("%d jobs after filtering sent ones (--show-seen mode).", len(fresh_jobs))
+        else:
+            fresh_jobs = [j for j in job_stubs if not tracker.has_seen(j["job_id"])]
+            logger.info("%d new jobs after filtering previously seen ones.", len(fresh_jobs))
 
         if not fresh_jobs:
             logger.info("No new jobs to apply to. Try different filters or wait for new postings.")
             return
 
+        # Group jobs by company so the user can see all postings at once
+        company_groups: dict[str, list[dict]] = {}
+        for stub in fresh_jobs:
+            key = stub.get("company_name", "").strip()
+            if not key:
+                # Fallback: try to extract company from URL /companies/slug/jobs/...
+                import re as _re
+                slug_match = _re.search(r"/companies/([^/]+)", stub["url"])
+                if slug_match:
+                    key = slug_match.group(1).replace("-", " ").title()
+                else:
+                    key = f"Unknown Company ({stub['job_id']})"
+            company_groups.setdefault(key, []).append(stub)
+
+        company_list = list(company_groups.items())
+        logger.info("%d companies with open roles.", len(company_list))
+
         # Apply to jobs
         applicant = JobApplicant(page, dry_run=args.dry_run)
         sent_count = 0
-        total_to_process = min(len(fresh_jobs), args.max_applications)
+        job_number = 0
+        user_quit = False
 
-        for i, stub in enumerate(fresh_jobs[:total_to_process], start=1):
-            try:
-                # Scrape full job details
-                job = await scraper.scrape_job_detail(stub["url"])
+        for comp_idx, (company_name, stubs) in enumerate(company_list, start=1):
+            if user_quit or sent_count >= args.max_applications:
+                break
 
-                # Filter by allowed locations (skip international jobs)
-                allowed = config.search_filters.allowed_locations
-                if allowed and job.location:
-                    location_lower = job.location.lower()
-                    if not any(loc.lower() in location_lower for loc in allowed):
-                        logger.info(
-                            "Skipping %s at %s — location '%s' not in allowed list.",
-                            job.title, job.company.name, job.location,
-                        )
+            # Show company job picker (lets user select which roles to apply to)
+            selection = reviewer.pick_jobs_from_company(
+                company_name=company_name,
+                job_stubs=stubs,
+                company_number=comp_idx,
+                total_companies=len(company_list),
+            )
+
+            if selection == "quit":
+                logger.info("User quit. Stopping.")
+                break
+            if selection is None:
+                # User skipped this company
+                continue
+
+            # Process each selected job for this company
+            for stub in selection:
+                if sent_count >= args.max_applications:
+                    break
+
+                try:
+                    # Scrape full job details
+                    job = await scraper.scrape_job_detail(stub["url"])
+
+                    # Always prefer the listing page title — it comes directly from
+                    # the job link text on the companies page and is reliably the
+                    # actual role name. The detail scraper often picks up section
+                    # headers like "About us", "About you", "Overview" instead.
+                    if stub.get("title"):
+                        job.title = stub["title"]
+
+                    # Also use listing company name if the detail scraper missed it
+                    if stub.get("company_name") and job.company.name in ("Unknown", ""):
+                        job.company.name = stub["company_name"]
+
+                    # Filter by allowed locations (skip international jobs)
+                    # These auto-skips do NOT count toward the job limit
+                    allowed = config.search_filters.allowed_locations
+                    if allowed and job.location:
+                        location_lower = job.location.lower()
+                        if not any(loc.lower() in location_lower for loc in allowed):
+                            logger.info(
+                                "Auto-skipping %s at %s — location '%s' not in allowed list.",
+                                job.title, job.company.name, job.location,
+                            )
+                            tracker.record(Application(
+                                job=job, message="", status=ApplicationStatus.SKIPPED,
+                                notes=f"location_filtered: {job.location}",
+                            ))
+                            continue
+
+                    # Check if already applied on the page itself
+                    # Auto-skip — does NOT count toward the job limit
+                    if await applicant._is_already_applied():
+                        logger.info("Already applied to %s (on-page). Auto-skipping.", job.title)
                         tracker.record(Application(
                             job=job, message="", status=ApplicationStatus.SKIPPED,
-                            notes=f"location_filtered: {job.location}",
+                            notes="already_applied_on_site",
                         ))
                         continue
 
-                # Check if already applied on the page itself
-                if await applicant._is_already_applied():
-                    logger.info("Already applied to %s (on-page). Skipping.", job.title)
-                    tracker.record(Application(
-                        job=job, message="", status=ApplicationStatus.SKIPPED,
-                        notes="already_applied_on_site",
-                    ))
-                    continue
+                    # This job will actually be shown to the user — count it
+                    job_number += 1
 
-                # Summarize company/role info for display + generate message in parallel
-                try:
-                    (about_summary, desc_summary), message = await asyncio.gather(
-                        generator.summarize_for_display(job),
-                        generator.generate_message(
-                            job=job,
-                            user_profile=config.user_profile,
-                            style_notes=config.message_style,
-                        ),
+                    # Summarize company/role info for display + generate message in parallel
+                    try:
+                        (about_summary, desc_summary), message = await asyncio.gather(
+                            generator.summarize_for_display(job),
+                            generator.generate_message(
+                                job=job,
+                                user_profile=config.user_profile,
+                                style_notes=config.message_style,
+                            ),
+                        )
+                        job.about_summary = about_summary
+                        job.description_summary = desc_summary
+                    except Exception as e:
+                        logger.warning("AI generation failed: %s. Using fallback.", e)
+                        message = generator.generate_fallback(job, config.user_profile)
+
+                    # Review the message
+                    decision, final_message = reviewer.review(
+                        job=job,
+                        message=message,
+                        job_number=job_number,
+                        total_jobs=len(fresh_jobs),
                     )
-                    job.about_summary = about_summary
-                    job.description_summary = desc_summary
+
+                    if decision == ReviewDecision.QUIT:
+                        logger.info("User quit. Stopping.")
+                        user_quit = True
+                        break
+                    elif decision == ReviewDecision.SKIP:
+                        tracker.record(Application(
+                            job=job, message=final_message, status=ApplicationStatus.SKIPPED,
+                            notes="user_skipped",
+                        ))
+                        continue
+                    elif decision in (ReviewDecision.APPROVE, ReviewDecision.EDIT):
+                        # Apply
+                        application = await applicant.apply_to_job(job, final_message)
+                        tracker.record(application)
+                        if application.status == ApplicationStatus.SENT:
+                            sent_count += 1
+
+                    # No artificial delay — user review time is the natural pacing
+
                 except Exception as e:
-                    logger.warning("AI generation failed: %s. Using fallback.", e)
-                    message = generator.generate_fallback(job, config.user_profile)
-
-                # Review the message
-                decision, final_message = reviewer.review(
-                    job=job,
-                    message=message,
-                    job_number=i,
-                    total_jobs=total_to_process,
-                )
-
-                if decision == ReviewDecision.QUIT:
-                    logger.info("User quit. Stopping.")
-                    break
-                elif decision == ReviewDecision.SKIP:
-                    tracker.record(Application(
-                        job=job, message=final_message, status=ApplicationStatus.SKIPPED,
-                        notes="user_skipped",
-                    ))
+                    logger.error("Error processing job %s: %s", stub.get("url", "?"), e)
                     continue
-                elif decision in (ReviewDecision.APPROVE, ReviewDecision.EDIT):
-                    # Apply
-                    application = await applicant.apply_to_job(job, final_message)
-                    tracker.record(application)
-                    if application.status == ApplicationStatus.SENT:
-                        sent_count += 1
-
-                # No artificial delay — user review time is the natural pacing
-
-            except Exception as e:
-                logger.error("Error processing job %s: %s", stub.get("url", "?"), e)
-                continue
 
         # Session summary
         summary = tracker.get_summary()
@@ -291,6 +356,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="config.yaml",
         help="Path to config file (default: config.yaml).",
+    )
+    parser.add_argument(
+        "--show-seen",
+        action="store_true",
+        help="Include previously seen jobs (dry runs, skipped). By default they're hidden.",
     )
     parser.add_argument(
         "--verbose",

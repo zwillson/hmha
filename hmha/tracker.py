@@ -49,27 +49,66 @@ class ApplicationTracker:
 
         # IDs of jobs we've actually sent real applications to
         self._applied_ids: set[str] = set()
+        # IDs of ALL jobs we've seen (sent, dry_run, skipped) — used to avoid
+        # showing the same jobs repeatedly across runs
+        self._seen_ids: set[str] = set()
         self._load_existing()
 
     def _load_existing(self) -> None:
-        """Load previously sent job IDs into memory for fast lookup."""
-        # Always load from the real applications file for deduplication
-        if not self._applications_path.exists():
-            return
+        """Load previously seen job IDs from BOTH CSVs into memory.
 
-        with open(self._applications_path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                job_id = row.get("job_id", "")
-                status = row.get("status", "")
-                if status == "sent" and job_id:
-                    self._applied_ids.add(job_id)
+        Only marks jobs as "seen" if the user actually interacted with them
+        (sent, dry_run, or user_skipped). Auto-skipped jobs (location_filtered,
+        already_applied_on_site) are NOT marked as seen, because the user never
+        reviewed them and may want to see them after changing filters.
+        """
+        # Notes that indicate auto-skips (user never saw these)
+        auto_skip_notes = {"location_filtered", "already_applied_on_site"}
 
-        logger.info("Loaded %d previously applied job IDs.", len(self._applied_ids))
+        for csv_path in (self._applications_path, self._dry_runs_path):
+            if not csv_path.exists():
+                continue
+
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    job_id = row.get("job_id", "")
+                    status = row.get("status", "")
+                    notes = row.get("notes", "")
+                    if not job_id:
+                        continue
+
+                    # Track confirmed sends separately
+                    if status == "sent":
+                        self._applied_ids.add(job_id)
+                        self._seen_ids.add(job_id)
+                        continue
+
+                    # For skipped jobs, check if it was an auto-skip or user-skip
+                    if status == "skipped":
+                        # Auto-skips: notes start with a known auto-skip prefix
+                        is_auto = any(notes.startswith(prefix) for prefix in auto_skip_notes)
+                        if is_auto:
+                            # Don't mark as seen — user never reviewed this job
+                            continue
+
+                    # User-reviewed jobs: dry_run, user_skipped
+                    if status in ("dry_run", "skipped"):
+                        self._seen_ids.add(job_id)
+
+        logger.info(
+            "Loaded %d previously applied, %d total seen job IDs.",
+            len(self._applied_ids),
+            len(self._seen_ids),
+        )
 
     def has_applied(self, job_id: str) -> bool:
         """Check if we've already sent a real application to this job."""
         return job_id in self._applied_ids
+
+    def has_seen(self, job_id: str) -> bool:
+        """Check if we've already seen this job (sent, dry_run, or skipped)."""
+        return job_id in self._seen_ids
 
     def record(self, application: Application) -> None:
         """Append an application record to the appropriate CSV."""
@@ -104,7 +143,14 @@ class ApplicationTracker:
                 "notes": application.notes,
             })
 
-        # Update in-memory set for real sends only
+        # Update in-memory sets
+        # Auto-skips (location_filtered, already_applied_on_site) don't count as "seen"
+        # because the user never reviewed them — they should reappear if filters change.
+        auto_skip_notes = {"location_filtered", "already_applied_on_site"}
+        is_auto_skip = any(application.notes.startswith(prefix) for prefix in auto_skip_notes)
+
+        if not is_auto_skip:
+            self._seen_ids.add(application.job.job_id)
         if application.status.value == "sent":
             self._applied_ids.add(application.job.job_id)
 

@@ -7,6 +7,7 @@ generates a tailored application message that sounds human-written.
 from __future__ import annotations
 
 import logging
+import random
 import re
 
 from anthropic import AsyncAnthropic
@@ -17,48 +18,103 @@ from hmha.utils import retry_async
 
 logger = logging.getLogger("hmha")
 
+# --- Structural variation: pick a random template each call ---
+# This prevents every message from reading identically.
+
+_STRUCTURE_VARIANTS = [
+    # Variant A: opener -> background -> skills -> close (classic)
+    """\
+For THIS message, use this flow:
+1. GREETING — "Hi [founder name(s) if provided, else just 'Hi']"
+2. SHORT PERSONAL OPENER (1-2 sentences) — something about YOU that connects to THEM.
+3. BACKGROUND — weave in your experience naturally, emphasizing what's relevant to this company.
+4. SKILLS — only mention what matters for this role. Skip this section entirely if the background already covers it.
+5. CLOSING — "Would love to get in touch!" + LinkedIn URL on its own line.""",
+
+    # Variant B: opener -> strongest experience first -> rest of background -> close
+    """\
+For THIS message, use this flow:
+1. GREETING — "Hi [founder name(s) if provided, else just 'Hi']"
+2. SHORT PERSONAL OPENER (1-2 sentences) — something about YOU that connects to THEM.
+3. LEAD WITH YOUR STRONGEST EXPERIENCE for this role — go into a bit of detail about what you actually did. \
+Then briefly mention your other experience and education.
+4. CLOSING — "Would love to get in touch!" + LinkedIn URL on its own line.
+(No separate skills section — weave relevant skills into the experience.)""",
+
+    # Variant C: opener -> what you're looking for -> why you're qualified -> close
+    """\
+For THIS message, use this flow:
+1. GREETING — "Hi [founder name(s) if provided, else just 'Hi']"
+2. SHORT PERSONAL OPENER (1-2 sentences) — something about YOU that connects to THEM.
+3. WHAT DRAWS YOU TO THIS ROLE — reference something specific from the job description or company page \
+that you'd want to work on, and naturally tie it to your experience.
+4. BRIEF BACKGROUND — keep it tight, 2-3 sentences covering your most relevant experience.
+5. CLOSING — "Would love to get in touch!" + LinkedIn URL on its own line.""",
+]
+
 SYSTEM_PROMPT = """You are helping a student write a short, personalized message to apply \
 for a startup internship on Y Combinator's Work at a Startup platform. This message goes \
 directly to the founding team.
 
-STRUCTURE (follow this order, adapt wording naturally to each company):
-1. GREETING: "Hi [founder name(s) if provided, otherwise just 'Hi']"
-2. OPENER — SHORT & PERSONAL (1-2 sentences MAX): \
-Share something genuine about yourself that connects to what the company does. Keep it simple and human. \
+{structure_variant}
+
+OPENER GUIDELINES:
+The opener should be SHORT & PERSONAL (1-2 sentences MAX). \
+Share something genuine about yourself that connects to what the company does. \
 The format is basically: "[something personal about me] so [why this company is cool to me]." \
-Examples of the VIBE (don't copy these, make each one unique and specific to the company): \
+Examples of the VIBE (don't copy these verbatim — make each one unique): \
 - AI movie company: "I've always been a big movie fan, watching Star Wars and Reservoir Dogs, \
 so I'd be really excited to work on the future of movies." \
 - Robotics company: "I've been nerding out about robots since I was a kid building LEGO Mindstorms, \
 so a chance to work on real-world robotics is kind of a dream." \
 - Fintech company: "After spending time on a trading desk at RBC, I got hooked on how tech can \
 change the way people interact with money." \
-Keep it SHORT. One or two casual sentences. Don't overthink it. Don't be verbose. \
-Just say something real about yourself and connect it to them naturally.
-3. BACKGROUND: Introduce yourself. Engineering Science at University of Toronto, graduating \
-soon, heading to UChicago for a Masters in Financial Mathematics. Looking for a summer internship \
-before that starts. Mention relevant experience: quant trader at RBC \
-Capital Markets (4 months), AI Engineer at RBC (12 months), API Tester at Scotiabank, \
-and computer vision research paper in progress. Weave these in naturally -- don't just list them. \
-Emphasize whichever experience is most relevant to THIS company. \
-Mention UChicago MFM when it's relevant (e.g., fintech, quant, data-heavy roles) but don't \
-force it in if the company has nothing to do with finance or math.
-4. SKILLS: Mention proficiency in Python and machine learning, familiarity with Java and JS. \
-Only mention what's relevant to the role.
-5. CLOSING: "Would love to get in touch!" followed by LinkedIn URL on a new line.
+Keep it SHORT. One or two casual sentences. Don't overthink it.
 
-RULES:
+BACKGROUND FACTS (use these, don't invent):
+- Engineering Science at University of Toronto, graduating soon
+- Heading to UChicago for a Masters in Financial Mathematics
+- 4 months quant trader at RBC Capital Markets
+- 12 months AI Engineer at RBC
+- API Tester at Scotiabank
+- Working on a biomedical research paper (computer vision problem in a hospital setting)
+- Skills: Python, ML, Java, JS
+Emphasize whichever experience is most relevant to THIS company. \
+Always mention that you're heading to UChicago for a Masters in Financial Mathematics — \
+work it in naturally alongside your other background. \
+Don't just list everything — pick the 2-3 things that matter and weave them in.
+
+SOUNDING HUMAN — THIS IS CRITICAL:
+- Use contractions: "I'm", "I've", "I'd", "don't", "didn't", "it's". Never "I am", "I have", "I would".
+- Use casual transitions: "honestly", "anyway", "also", "on the side", "before that". \
+Not "furthermore", "additionally", "moreover".
+- It's okay to start a sentence with "And" or "But". Real people do this.
+- Vary your sentence length. Mix short punchy sentences with longer ones. \
+Don't make every sentence the same length — that's an AI tell.
+- Reference something SPECIFIC from the job description or company page. \
+Not their mission statement — pick a technical detail, a product feature, a specific problem they mention. \
+Something that shows you actually read their page.
+- Don't use the same sentence structure repeatedly. If one sentence starts with "I", \
+the next one shouldn't. Mix it up.
+
+BANNED WORDS/PHRASES (these scream AI — never use them):
+"exciting", "excited to apply", "passionate", "thrilled", "amazing", "incredible", \
+"love what you're building", "really resonates", "deeply impressed", \
+"I believe I would be a great fit", "caught my eye", "stands out", "fascinating", \
+"aligns with", "aligns perfectly", "I'm drawn to", "mission-driven", \
+"innovative", "cutting-edge", "leverage my skills", "bring value", "make an impact", \
+"contribute to your team", "unique opportunity", "I am confident", \
+"diverse experience", "strong foundation", "well-positioned", \
+"I would welcome the opportunity", "I look forward to", "keen interest".
+
+MORE RULES:
 - Write in first person as the applicant.
-- Keep the tone casual and direct. Like a text to someone you respect, not a cover letter.
+- Tone: like a text to someone you respect. Not a cover letter. Not a LinkedIn post.
 - The opener should NEVER start with "I saw you're working on..." or "I noticed that..." — \
 those are generic. Start with something about YOU that bridges to THEM.
-- Keep the opener SHORT. 1-2 sentences. Not a paragraph. Think casual, not essay.
-- NEVER use these words/phrases: "exciting", "passionate", "thrilled", "amazing", "incredible", \
-"love what you're building", "really resonates", "deeply impressed", "I am excited to apply", \
-"I believe I would be a great fit", "caught my eye", "stands out", "fascinating". These all scream AI.
-- Sound like a 22-year-old engineering student, not a LinkedIn influencer.
-- NEVER mention availability, dates, or when you're free (no "June through August", no "available this summer", etc.).
-- Output ONLY the message text. No subject line."""
+- NEVER mention availability, dates, or when you're free.
+- Vary the message length. Sometimes 80 words is fine, sometimes 150. Don't always aim for the same count.
+- Output ONLY the message text. No subject line, no headers, no labels."""
 
 FALLBACK_TEMPLATE = (
     "Hi!\n\n"
@@ -69,7 +125,7 @@ FALLBACK_TEMPLATE = (
     "looking for an internship at a startup this coming summer. I have spent "
     "4 months as a quant trader at RBC Capital Markets, and previously I spent "
     "12 months as an AI Engineer there. Before that, I was an API Tester at "
-    "Scotiabank and I am working on getting my computer vision research paper published.\n"
+    "Scotiabank and I'm working on a biomedical research paper.\n"
     "I am proficient in Python, machine learning, and also familiar with Java and JS.\n\n"
     "Would love to get in touch! You can learn more about me here: {linkedin}"
 )
@@ -91,14 +147,19 @@ class MessageGenerator:
     ) -> str:
         """Generate a personalized 50-150 word application message.
 
-        Falls back to a template with [EDIT THIS] markers if the API fails.
+        Picks a random structural variant each time so messages don't
+        all read the same. Falls back to a template if the API fails.
         """
         prompt = self._build_prompt(job, user_profile, style_notes)
+
+        # Pick a random structure variant for this message
+        variant = random.choice(_STRUCTURE_VARIANTS)
+        system = SYSTEM_PROMPT.format(structure_variant=variant)
 
         response = await self._client.messages.create(
             model=self._model,
             max_tokens=400,
-            system=SYSTEM_PROMPT,
+            system=system,
             messages=[{"role": "user", "content": prompt}],
         )
 
@@ -111,7 +172,7 @@ class MessageGenerator:
             response = await self._client.messages.create(
                 model=self._model,
                 max_tokens=400,
-                system=SYSTEM_PROMPT,
+                system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
             message = response.content[0].text.strip()
@@ -183,23 +244,37 @@ ROLE: [your summary]"""
             return "", ""
 
     def _build_prompt(self, job: Job, user_profile: UserProfile, style_notes: str) -> str:
-        """Construct the user prompt with all context for Claude."""
+        """Construct the user prompt with all context for Claude.
+
+        Feeds rich company context so the model can reference specific details
+        rather than writing generic messages.
+        """
         sections = [
-            "Write a message to apply for this role. Here's the context:",
+            "Write a message to apply for this role. Here's everything I know about the company and role:",
             "",
             f"COMPANY: {job.company.name} ({job.company.yc_batch})" if job.company.yc_batch
             else f"COMPANY: {job.company.name}",
         ]
 
+        # Founder names — so Claude can greet them by name
+        if job.company.founders:
+            founder_names = [f.name for f in job.company.founders]
+            sections.append(f"FOUNDERS: {', '.join(founder_names)}")
+
+        if job.company.website:
+            sections.append(f"COMPANY WEBSITE: {job.company.website}")
+
         if job.company.description:
-            sections.append(f"WHAT THEY DO: {job.company.description}")
+            # Feed the FULL company description so Claude can pick out specifics
+            sections.append(f"ABOUT THE COMPANY (from their page):\n{job.company.description[:2000]}")
 
         sections.append(f"\nROLE: {job.title}")
 
         if job.description:
-            sections.append(f"DESCRIPTION: {job.description}")
+            # Feed the FULL job description — this is where the best specific details live
+            sections.append(f"FULL JOB DESCRIPTION:\n{job.description[:2000]}")
         if job.requirements:
-            sections.append(f"REQUIREMENTS: {job.requirements}")
+            sections.append(f"REQUIREMENTS:\n{job.requirements[:1000]}")
         if job.culture_notes:
             sections.append(f"CULTURE/VALUES: {job.culture_notes}")
         if job.location:
@@ -223,7 +298,12 @@ ROLE: [your summary]"""
         if style_notes:
             sections.append(f"\nTONE GUIDANCE: {style_notes}")
 
-        sections.append("\nWrite the message now. Follow the structure from the system prompt. Be specific to this company.")
+        # Final instruction — nudge Claude to be specific
+        sections.append(
+            "\nWrite the message now. IMPORTANT: reference at least one SPECIFIC thing "
+            "from the job description or company page above — a product feature, a technical "
+            "detail, a problem they mention. Don't be generic."
+        )
         return "\n".join(sections)
 
     async def close(self) -> None:

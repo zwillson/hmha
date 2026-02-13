@@ -2,6 +2,7 @@
 
 Shows job context and the generated message, then lets the user
 approve, edit, skip, or quit before each application is sent.
+Also handles multi-job selection when a company has multiple postings.
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ class MessageReviewer:
         name_line = company.name if company.name and company.name != "Unknown" else NOT_FOUND
         if company.yc_batch:
             name_line += f" ({company.yc_batch})"
-        print(f"\n{BOLD}Company:{RESET}    {name_line}")
+        print(f"{BOLD}Company:{RESET}    {name_line}")
 
         # Role
         role_line = job.title if job.title and job.title != "Unknown Role" else NOT_FOUND
@@ -92,11 +93,10 @@ class MessageReviewer:
         # Location
         print(f"{BOLD}Location:{RESET}   {job.location or NOT_FOUND}")
 
-        # Industry & size
+        # Industry & size on one line
         industry = company.industry or NOT_FOUND
         size = f"{company.size} people" if company.size else NOT_FOUND
-        print(f"{BOLD}Industry:{RESET}   {industry}")
-        print(f"{BOLD}Size:{RESET}       {size}")
+        print(f"{BOLD}Industry:{RESET}   {industry}  |  {BOLD}Size:{RESET} {size}")
 
         # Salary
         print(f"{BOLD}Salary:{RESET}     {job.salary_range or NOT_FOUND}")
@@ -114,46 +114,53 @@ class MessageReviewer:
         else:
             print(NOT_FOUND)
 
-        # Company website (clickable link for the user)
+        # Company website
         print(f"{BOLD}Website:{RESET}    {DIM}{company.website or NOT_FOUND}{RESET}")
 
-        # About the company (use AI summary if available, fall back to raw)
-        print(f"\n{BOLD}{MAGENTA}About the company:{RESET}")
+        # About the company
+        print(f"{BOLD}{MAGENTA}About:{RESET} ", end="")
         if job.about_summary:
-            print(f"  {job.about_summary}")
+            print(job.about_summary)
         elif company.description:
-            print(f"  {DIM}{company.description[:500]}{RESET}")
-        else:
-            print(f"  {NOT_FOUND}")
-
-        # Role description (use AI summary if available, fall back to raw)
-        print(f"\n{BOLD}{MAGENTA}Role summary:{RESET}")
-        if job.description_summary:
-            print(f"  {job.description_summary}")
-        elif job.description:
-            desc = job.description[:500]
-            if len(job.description) > 500:
+            desc = company.description[:300].replace("\n", " ")
+            if len(company.description) > 300:
                 desc += "..."
-            print(f"  {DIM}{desc}{RESET}")
+            print(f"{DIM}{desc}{RESET}")
         else:
-            print(f"  {NOT_FOUND}")
+            print(NOT_FOUND)
+
+        # Role description
+        role_label = f"Role ({job.title})" if job.title and job.title != "Unknown Role" else "Role"
+        print(f"{BOLD}{MAGENTA}{role_label}:{RESET} ", end="")
+        if job.description_summary:
+            print(job.description_summary)
+        elif job.description:
+            desc = job.description[:300].replace("\n", " ")
+            if len(job.description) > 300:
+                desc += "..."
+            print(f"{DIM}{desc}{RESET}")
+        else:
+            print(NOT_FOUND)
 
         # Requirements
-        print(f"\n{BOLD}{MAGENTA}Requirements:{RESET}")
+        print(f"{BOLD}{MAGENTA}Requirements:{RESET} ", end="")
         if job.requirements:
-            reqs = job.requirements[:400]
-            if len(job.requirements) > 400:
+            reqs = job.requirements[:250].replace("\n", " ")
+            if len(job.requirements) > 250:
                 reqs += "..."
-            print(f"  {DIM}{reqs}{RESET}")
+            print(f"{DIM}{reqs}{RESET}")
         else:
-            print(f"  {NOT_FOUND}")
+            print(NOT_FOUND)
 
-        # Culture
-        print(f"\n{BOLD}{MAGENTA}Culture/Values:{RESET}")
+        # Culture — truncated
+        print(f"{BOLD}{MAGENTA}Culture:{RESET} ", end="")
         if job.culture_notes:
-            print(f"  {DIM}{job.culture_notes}{RESET}")
+            culture = job.culture_notes[:200].replace("\n", " ")
+            if len(job.culture_notes) > 200:
+                culture += "..."
+            print(f"{DIM}{culture}{RESET}")
         else:
-            print(f"  {NOT_FOUND}")
+            print(NOT_FOUND)
 
     def _display_message(self, message: str) -> None:
         word_count = len(message.split())
@@ -197,3 +204,81 @@ class MessageReviewer:
         if lines:
             return "\n".join(lines)
         return message
+
+    def pick_jobs_from_company(
+        self,
+        company_name: str,
+        job_stubs: list[dict],
+        company_number: int,
+        total_companies: int,
+    ) -> list[dict] | None:
+        """Show all job postings for a company and let the user pick which to apply to.
+
+        Returns:
+            list[dict] — the selected job stubs (could be 1 or many)
+            None — if user wants to skip this company entirely
+            "quit" sentinel is handled by returning empty list with a quit flag
+        """
+        # Show company header with blurb if available
+        blurb = ""
+        for s in job_stubs:
+            if s.get("company_blurb"):
+                blurb = s["company_blurb"]
+                break
+
+        print(f"\n{'=' * 60}")
+        print(f"{BOLD}{CYAN}  Company {company_number}/{total_companies}: {company_name}{RESET}")
+        if blurb:
+            # Truncate to ~80 chars for a clean one-liner
+            short = blurb if len(blurb) <= 80 else blurb[:77] + "..."
+            print(f"  {DIM}{short}{RESET}")
+        print(f"{'=' * 60}")
+
+        if len(job_stubs) == 1:
+            # Single posting — no need to pick, just show it
+            stub = job_stubs[0]
+            print(f"\n  {BOLD}1 open role:{RESET} {stub['title']}")
+            choice = input(
+                f"\n{BOLD}[A]pply  [S]kip company  [Q]uit{RESET} > "
+            ).strip().lower()
+
+            if choice in ("a", "apply", ""):
+                return job_stubs
+            elif choice in ("q", "quit"):
+                return "quit"  # type: ignore
+            else:
+                return None  # skip
+
+        # Multiple postings — show numbered list
+        print(f"\n  {BOLD}{len(job_stubs)} open roles:{RESET}")
+        for idx, stub in enumerate(job_stubs, start=1):
+            print(f"    {BOLD}{CYAN}{idx}.{RESET} {stub['title']}")
+
+        print(f"\n{DIM}Enter numbers separated by commas (e.g. 1,3), 'all', or 'skip'.{RESET}")
+        while True:
+            choice = input(
+                f"{BOLD}Which roles? [numbers/all/skip/quit]{RESET} > "
+            ).strip().lower()
+
+            if choice in ("q", "quit"):
+                return "quit"  # type: ignore
+            elif choice in ("s", "skip"):
+                return None
+            elif choice in ("a", "all"):
+                return job_stubs
+            else:
+                # Parse comma-separated numbers
+                try:
+                    indices = [int(x.strip()) for x in choice.split(",")]
+                    selected = []
+                    for idx in indices:
+                        if 1 <= idx <= len(job_stubs):
+                            selected.append(job_stubs[idx - 1])
+                        else:
+                            print(f"  {RED}Invalid number: {idx}. Pick between 1-{len(job_stubs)}.{RESET}")
+                            selected = []
+                            break
+                    if selected:
+                        return selected
+                except ValueError:
+                    print(f"  {RED}Invalid input. Enter numbers (e.g. 1,3), 'all', 'skip', or 'quit'.{RESET}")

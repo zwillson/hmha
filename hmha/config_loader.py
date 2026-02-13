@@ -35,6 +35,11 @@ class SearchFilters:
     visa_not_required: str = "any"
     sort_by: str = "most_active"
     allowed_locations: list[str] = field(default_factory=list)
+    # Sidebar dropdown filters (these get clicked in the browser UI)
+    # commitment: which Commitment options to select. ["All"] or specific ones.
+    commitment: list[str] = field(default_factory=lambda: ["All"])
+    # role_categories: which Role dropdown options to select (Engineering, Science, etc.)
+    role_categories: list[str] = field(default_factory=lambda: ["All"])
 
 
 @dataclass
@@ -95,6 +100,8 @@ def load_config(config_path: Path) -> Config:
         visa_not_required=filt.get("visa_not_required", "any"),
         sort_by=filt.get("sort_by", "most_active"),
         allowed_locations=filt.get("allowed_locations", []),
+        commitment=filt.get("commitment", ["All"]),
+        role_categories=filt.get("role_categories", ["All"]),
     )
 
     # Parse settings

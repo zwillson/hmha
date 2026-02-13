@@ -114,11 +114,8 @@ class MessageReviewer:
         else:
             print(NOT_FOUND)
 
-        # Website (clickable link for the user)
+        # Company website (clickable link for the user)
         print(f"{BOLD}Website:{RESET}    {DIM}{company.website or NOT_FOUND}{RESET}")
-
-        # Job URL
-        print(f"{BOLD}Job URL:{RESET}    {DIM}{job.url or NOT_FOUND}{RESET}")
 
         # About the company (use AI summary if available, fall back to raw)
         print(f"\n{BOLD}{MAGENTA}About the company:{RESET}")

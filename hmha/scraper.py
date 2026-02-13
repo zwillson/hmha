@@ -6,6 +6,7 @@ and navigates to individual job pages for full details.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -13,7 +14,6 @@ from playwright.async_api import Page
 
 from hmha import selectors
 from hmha.models import Company, Founder, Job
-from hmha.utils import random_delay
 
 logger = logging.getLogger("hmha")
 
@@ -32,7 +32,6 @@ class JobScraper:
         """
         logger.info("Navigating to jobs page: %s", url)
         await self._page.goto(url, wait_until="domcontentloaded")
-        await random_delay(0.5, 1)
 
         # Scroll to load more jobs (the page uses infinite scroll / load-more)
         await self._scroll_to_load_all(max_scrolls=15)
@@ -78,7 +77,6 @@ class JobScraper:
         """
         logger.info("Scraping job detail: %s", job_url)
         await self._page.goto(job_url, wait_until="domcontentloaded")
-        await random_delay(0.3, 0.8)
 
         job_id = self._extract_job_id(job_url)
 
@@ -198,7 +196,7 @@ class JobScraper:
         for i in range(max_scrolls):
             previous_height = await self._page.evaluate("document.body.scrollHeight")
             await self._page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await random_delay(0.3, 0.8)
+            await asyncio.sleep(0.3)  # minimal wait for DOM to update
 
             # Try clicking any "load more" or "show more" button
             for btn_selector in [selectors.LOAD_MORE_BUTTON, selectors.SHOW_MORE_JOBS]:
@@ -206,7 +204,7 @@ class JobScraper:
                     btn = await self._page.query_selector(btn_selector)
                     if btn and await btn.is_visible():
                         await btn.click()
-                        await random_delay(0.3, 0.8)
+                        await asyncio.sleep(0.3)
                 except Exception:
                     pass
 
@@ -263,43 +261,49 @@ class JobScraper:
     async def _extract_metadata(self, page_text: str = "") -> dict[str, str]:
         """Extract location, job type, and salary from the page.
 
-        Tries DOM elements first, then falls back to regex on page text.
+        Uses a single JS call to gather all chip/tag text, then filters in Python.
         """
         meta: dict[str, str] = {}
 
-        # Strategy 1: Try various DOM selectors for metadata chips/tags
-        chip_selectors = [
-            "span[class*='tag']", "div[class*='chip']", "div[class*='detail']",
-            "span[class*='label']", "div[class*='meta']", "span[class*='badge']",
-            "li[class*='detail']", "div[class*='info'] span",
-        ]
+        # Single JS call — get all text from metadata-like elements at once
         try:
-            for sel in chip_selectors:
-                chips = await self._page.query_selector_all(sel)
-                for chip in chips:
-                    text = (await chip.inner_text()).strip()
-                    if not text or len(text) > 100:
-                        continue
-                    lower = text.lower()
-                    if not meta.get("location") and any(
-                        loc in lower for loc in [
-                            "remote", "san francisco", "sf", "new york", "nyc",
-                            "los angeles", "la", "austin", "seattle", "boston",
-                            "chicago", "denver", "miami", "india", "london",
-                            "berlin", "toronto", "paris", "bangalore",
-                        ]
-                    ):
-                        meta["location"] = text
-                    elif not meta.get("job_type") and any(
-                        t in lower for t in ["full-time", "part-time", "intern", "contract", "fulltime"]
-                    ):
-                        meta["job_type"] = text
-                    elif not meta.get("salary") and ("$" in text or re.search(r"\d+k", lower)):
-                        meta["salary"] = text
+            chip_texts = await self._page.evaluate("""() => {
+                const sels = [
+                    "span[class*='tag']", "div[class*='chip']", "div[class*='detail']",
+                    "span[class*='label']", "div[class*='meta']", "span[class*='badge']",
+                    "li[class*='detail']", "div[class*='info'] span"
+                ];
+                const texts = [];
+                for (const sel of sels) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const t = (el.textContent || '').trim();
+                        if (t && t.length <= 100) texts.push(t);
+                    }
+                }
+                return texts;
+            }""")
+
+            for text in chip_texts:
+                lower = text.lower()
+                if not meta.get("location") and any(
+                    loc in lower for loc in [
+                        "remote", "san francisco", "sf", "new york", "nyc",
+                        "los angeles", "la", "austin", "seattle", "boston",
+                        "chicago", "denver", "miami", "india", "london",
+                        "berlin", "toronto", "paris", "bangalore",
+                    ]
+                ):
+                    meta["location"] = text
+                elif not meta.get("job_type") and any(
+                    t in lower for t in ["full-time", "part-time", "intern", "contract", "fulltime"]
+                ):
+                    meta["job_type"] = text
+                elif not meta.get("salary") and ("$" in text or re.search(r"\d+k", lower)):
+                    meta["salary"] = text
         except Exception as e:
             logger.debug("DOM metadata extraction failed: %s", e)
 
-        # Strategy 2: Regex on full page text for location
+        # Regex fallback for location
         if not meta.get("location"):
             loc_patterns = [
                 r"(?:Location|Based in|Office)[:\s]+([^\n]{3,50})",
@@ -311,7 +315,7 @@ class JobScraper:
                     meta["location"] = match.group(1).strip()
                     break
 
-        # Strategy 3: Regex for salary
+        # Regex fallback for salary
         if not meta.get("salary"):
             salary_match = re.search(r"\$[\d,]+\s*[-–]\s*\$[\d,]+(?:\s*(?:per year|/yr|annually))?", page_text)
             if salary_match:
@@ -391,26 +395,52 @@ class JobScraper:
         return result
 
     async def _extract_founders(self) -> list[Founder]:
-        """Try to extract founder names and LinkedIn URLs from the page."""
+        """Try to extract founder names and LinkedIn URLs from the page.
+
+        Uses a single JS call to extract all LinkedIn link data at once (fast).
+        """
         founders: list[Founder] = []
 
-        try:
-            # Strategy 1: Look for LinkedIn links with founder-like context
-            all_links = await self._page.query_selector_all("a[href*='linkedin.com/in/']")
-            for link in all_links:
-                href = await link.get_attribute("href") or ""
-                name = (await link.inner_text()).strip()
+        _junk_names = {
+            "linkedin", "connect", "view profile", "follow", "similar jobs",
+            "apply", "share", "save", "back", "next", "previous", "sign up",
+            "log in", "sign in", "view all jobs", "see all jobs", "all jobs",
+        }
 
-                # Filter out generic LinkedIn links (too short, or our own link)
+        try:
+            # Single JS call — grab all LinkedIn links' href + textContent at once
+            raw = await self._page.evaluate("""() => {
+                return Array.from(document.querySelectorAll("a[href*='linkedin.com/in/']"))
+                    .map(a => ({ href: a.href, name: (a.textContent || '').trim() }));
+            }""")
+
+            seen_hrefs: set[str] = set()
+            for item in raw:
+                href = item.get("href", "")
+                name = item.get("name", "").strip()
+
+                if href in seen_hrefs:
+                    continue
+                seen_hrefs.add(href)
+
                 if not name or len(name) < 3 or len(name) > 50:
                     continue
-                # Skip if it looks like a button or generic text
-                if name.lower() in ("linkedin", "connect", "view profile", "follow"):
+
+                name_normalized = " ".join(name.lower().split())
+                if name_normalized in _junk_names:
+                    continue
+                if any(junk in name_normalized for junk in _junk_names):
+                    continue
+
+                words = name.split()
+                if len(words) < 2 or len(words) > 4:
+                    continue
+                if not all(w.isalpha() for w in words):
                     continue
 
                 founders.append(Founder(name=name, linkedin=href))
 
-            # Strategy 2: Look for text patterns like "Founded by X" or "Founders: X, Y"
+            # Strategy 2: regex fallback on page_text (already extracted earlier)
             if not founders:
                 page_text = await self._page.inner_text("body")
                 founder_patterns = [
@@ -421,7 +451,6 @@ class JobScraper:
                 for pat in founder_patterns:
                     matches = re.findall(pat, page_text)
                     for match_text in matches:
-                        # Split "Alice Smith and Bob Jones" or "Alice Smith, Bob Jones"
                         names = re.split(r"\s*(?:,|and)\s*", match_text)
                         for name in names:
                             name = name.strip()
@@ -432,40 +461,72 @@ class JobScraper:
         except Exception as e:
             logger.debug("Founder extraction failed: %s", e)
 
-        return founders[:5]  # Cap at 5 founders
+        return founders[:5]
 
     async def _extract_company_website(self, company_name: str) -> str:
-        """Try to extract the company's website URL from the page."""
-        try:
-            # Strategy 1: Look for explicit website links
-            all_links = await self._page.query_selector_all("a[href]")
-            for link in all_links:
-                text = (await link.inner_text()).strip().lower()
-                href = await link.get_attribute("href") or ""
+        """Try to extract the company's actual website URL from the page.
 
-                # Look for links labeled "website", "site", or the company domain
-                if text in ("website", "site", "homepage", "visit site", "visit website"):
+        Uses a single JS call to get all link data, then filters in Python (fast).
+        """
+        _social_domains = (
+            "linkedin.com", "twitter.com", "x.com", "github.com",
+            "facebook.com", "instagram.com", "youtube.com", "medium.com",
+        )
+        _excluded_domains = _social_domains + (
+            "ycombinator.com", "workatastartup.com", "crunchbase.com",
+            "glassdoor.com", "indeed.com", "lever.co", "greenhouse.io",
+            "bamboohr.com", "ashbyhq.com", "google.com", "apple.com",
+        )
+
+        def _is_excluded(url: str) -> bool:
+            lower = url.lower()
+            return any(d in lower for d in _excluded_domains)
+
+        def _is_social(url: str) -> bool:
+            lower = url.lower()
+            return any(d in lower for d in _social_domains)
+
+        try:
+            # Single JS call — get all links' href + textContent at once
+            raw = await self._page.evaluate("""() => {
+                return Array.from(document.querySelectorAll("a[href]"))
+                    .map(a => ({ href: a.href, text: (a.textContent || '').trim() }));
+            }""")
+
+            # Strategy 1: Icon row — find a non-social link next to a social link
+            for i, item in enumerate(raw):
+                href = item.get("href", "")
+                if not href.startswith("http"):
+                    continue
+
+                has_social_neighbour = False
+                for offset in (-2, -1, 1, 2):
+                    ni = i + offset
+                    if 0 <= ni < len(raw):
+                        neighbour_href = raw[ni].get("href", "")
+                        if _is_social(neighbour_href):
+                            has_social_neighbour = True
+                            break
+
+                if has_social_neighbour and not _is_excluded(href):
                     return href
 
-                # Link text that looks like a domain
-                if re.match(r"^https?://(?!.*(?:linkedin|twitter|github|ycombinator|workatastartup))", href):
-                    if text and ("." in text) and len(text) < 50:
+            # Strategy 2: Explicitly labeled "website"
+            for item in raw:
+                text = item.get("text", "").lower()
+                href = item.get("href", "")
+                if text in ("website", "site", "homepage", "visit site", "visit website"):
+                    if href.startswith("http") and not _is_excluded(href):
                         return href
 
-            # Strategy 2: Look for external links that aren't social media
-            page_text = await self._page.inner_text("body")
-            url_match = re.search(
-                r"(https?://(?:www\.)?(?!linkedin|twitter|github|ycombinator|workatastartup)[a-z0-9-]+\.[a-z]{2,}(?:/[^\s]*)?)",
-                page_text,
-                re.IGNORECASE,
-            )
-            if url_match:
-                return url_match.group(1)
-
-            # Strategy 3: Construct YC company page URL
-            if company_name and company_name != "Unknown":
-                slug = company_name.lower().replace(" ", "-")
-                return f"https://www.ycombinator.com/companies/{slug}"
+            # Strategy 3: Text looks like a bare domain
+            for item in raw:
+                text = item.get("text", "")
+                href = item.get("href", "")
+                if not href.startswith("http") or _is_excluded(href):
+                    continue
+                if re.match(r"^(?:https?://)?(?:www\.)?[a-z0-9-]+\.[a-z]{2,}/?$", text, re.IGNORECASE):
+                    return href
 
         except Exception as e:
             logger.debug("Website extraction failed: %s", e)

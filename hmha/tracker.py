@@ -19,6 +19,8 @@ CSV_HEADERS = [
     "company_name",
     "job_title",
     "url",
+    "company_website",
+    "founders",
     "message_sent",
     "status",
     "timestamp",
@@ -63,11 +65,18 @@ class ApplicationTracker:
             if is_new_file:
                 writer.writeheader()
 
+            # Build founder names string for CSV
+            founders_str = ", ".join(
+                f.name for f in application.job.company.founders
+            ) if application.job.company.founders else ""
+
             writer.writerow({
                 "job_id": application.job.job_id,
                 "company_name": application.job.company.name,
                 "job_title": application.job.title,
                 "url": application.job.url,
+                "company_website": application.job.company.website or "",
+                "founders": founders_str,
                 "message_sent": application.message,
                 "status": application.status.value,
                 "timestamp": application.timestamp.isoformat(),

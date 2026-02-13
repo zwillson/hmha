@@ -12,7 +12,6 @@ from playwright.async_api import Page
 
 from hmha import selectors
 from hmha.models import Application, ApplicationStatus, Job
-from hmha.utils import random_delay
 
 logger = logging.getLogger("hmha")
 
@@ -104,7 +103,6 @@ class JobApplicant:
             btn = await self._page.wait_for_selector(selectors.APPLY_BUTTON, timeout=5000)
             if btn:
                 await btn.click()
-                await random_delay(0.5, 1.5)
                 return True
         except Exception as e:
             logger.debug("Apply button error: %s", e)
@@ -114,46 +112,28 @@ class JobApplicant:
         """Wait for the application modal to appear."""
         try:
             await self._page.wait_for_selector(selectors.MODAL, timeout=timeout_ms)
-            await random_delay(0.3, 0.8)
             return True
         except Exception:
             return False
 
     async def _fill_message(self, message: str) -> None:
-        """Type the message into the modal's textarea.
-
-        Uses type() with per-character delay to trigger React change events.
-        Falls back to fill() + dispatch if type() doesn't work.
-        """
+        """Fill the modal's textarea instantly using fill() + event dispatch."""
         textarea = await self._page.wait_for_selector(selectors.MODAL_TEXTAREA, timeout=3000)
         if not textarea:
             raise RuntimeError("Textarea not found in modal.")
 
         await textarea.click()
-        await random_delay(0.2, 0.5)
-
-        # Clear any placeholder/existing text
-        await textarea.fill("")
-
-        # Type quickly (5ms per keystroke — fast but still triggers React events)
-        await textarea.type(message, delay=5)
-
-        # Verify the text was entered
-        value = await textarea.input_value()
-        if len(value) < len(message) * 0.8:
-            # Fallback: use fill() and manually dispatch input event
-            logger.warning("type() may have failed. Falling back to fill().")
-            await textarea.fill(message)
-            await self._page.evaluate(
-                """(selector) => {
-                    const el = document.querySelector(selector);
-                    if (el) {
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }""",
-                selectors.MODAL_TEXTAREA,
-            )
+        await textarea.fill(message)
+        await self._page.evaluate(
+            """(selector) => {
+                const el = document.querySelector(selector);
+                if (el) {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }""",
+            selectors.MODAL_TEXTAREA,
+        )
 
     async def _submit_application(self) -> bool:
         """Click the Send button and wait for the modal to close."""
@@ -163,7 +143,6 @@ class JobApplicant:
                 return False
 
             await btn.click()
-            await random_delay(1, 2)
 
             # Verify: modal should close after successful submission
             try:
@@ -184,7 +163,6 @@ class JobApplicant:
             close_btn = await self._page.query_selector(selectors.CLOSE_BUTTON)
             if close_btn:
                 await close_btn.click()
-                await random_delay(0.3, 0.5)
         except Exception:
             # Try pressing Escape as fallback
             try:

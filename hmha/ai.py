@@ -23,32 +23,41 @@ directly to the founding team.
 
 STRUCTURE (follow this order, adapt wording naturally to each company):
 1. GREETING: "Hi [founder name(s) if provided, otherwise just 'Hi']"
-2. PERSONALIZED HOOK: One or two sentences about why this company's MISSION or GOAL interests you. \
-Focus on the PROBLEM they're solving or the OUTCOME they're working toward -- NOT their tech stack. \
-Connect it to something about the applicant's own experience or interests if possible. \
-For example: "I saw you're trying to make X easier for Y -- I ran into that exact problem when I was doing Z" \
-or "The idea of using AI to solve [specific problem] is interesting to me because [personal connection]." \
-Keep it matter-of-fact. No flattery, no superlatives.
+2. OPENER — SHORT & PERSONAL (1-2 sentences MAX): \
+Share something genuine about yourself that connects to what the company does. Keep it simple and human. \
+The format is basically: "[something personal about me] so [why this company is cool to me]." \
+Examples of the VIBE (don't copy these, make each one unique and specific to the company): \
+- AI movie company: "I've always been a big movie fan, watching Star Wars and Reservoir Dogs, \
+so I'd be really excited to work on the future of movies." \
+- Robotics company: "I've been nerding out about robots since I was a kid building LEGO Mindstorms, \
+so a chance to work on real-world robotics is kind of a dream." \
+- Fintech company: "After spending time on a trading desk at RBC, I got hooked on how tech can \
+change the way people interact with money." \
+Keep it SHORT. One or two casual sentences. Don't overthink it. Don't be verbose. \
+Just say something real about yourself and connect it to them naturally.
 3. BACKGROUND: Introduce yourself. Engineering Science at University of Toronto, graduating \
-soon, looking for a summer internship. Mention relevant experience: quant trader at RBC \
+soon, heading to UChicago for a Masters in Financial Mathematics. Looking for a summer internship \
+before that starts. Mention relevant experience: quant trader at RBC \
 Capital Markets (4 months), AI Engineer at RBC (12 months), API Tester at Scotiabank, \
 and computer vision research paper in progress. Weave these in naturally -- don't just list them. \
-Emphasize whichever experience is most relevant to THIS company.
+Emphasize whichever experience is most relevant to THIS company. \
+Mention UChicago MFM when it's relevant (e.g., fintech, quant, data-heavy roles) but don't \
+force it in if the company has nothing to do with finance or math.
 4. SKILLS: Mention proficiency in Python and machine learning, familiarity with Java and JS. \
 Only mention what's relevant to the role.
-5. AVAILABILITY: Available June through August, looking for a role where you can learn a ton.
-6. CLOSING: "Would love to get in touch!" followed by LinkedIn URL on a new line.
+5. CLOSING: "Would love to get in touch!" followed by LinkedIn URL on a new line.
 
 RULES:
 - Write in first person as the applicant.
 - Keep the tone casual and direct. Like a text to someone you respect, not a cover letter.
+- The opener should NEVER start with "I saw you're working on..." or "I noticed that..." — \
+those are generic. Start with something about YOU that bridges to THEM.
+- Keep the opener SHORT. 1-2 sentences. Not a paragraph. Think casual, not essay.
 - NEVER use these words/phrases: "exciting", "passionate", "thrilled", "amazing", "incredible", \
 "love what you're building", "really resonates", "deeply impressed", "I am excited to apply", \
-"I believe I would be a great fit", "caught my eye", "stands out". These all scream AI.
-- The hook should focus on the company's GOAL or MISSION, not their tech. \
-Write it like "I saw you're trying to solve X for Y -- that's interesting because Z" -- \
-not "Your groundbreaking work on X is truly inspiring" or "Your use of React and Kubernetes is impressive".
+"I believe I would be a great fit", "caught my eye", "stands out", "fascinating". These all scream AI.
 - Sound like a 22-year-old engineering student, not a LinkedIn influencer.
+- NEVER mention availability, dates, or when you're free (no "June through August", no "available this summer", etc.).
 - Output ONLY the message text. No subject line."""
 
 FALLBACK_TEMPLATE = (
@@ -56,13 +65,12 @@ FALLBACK_TEMPLATE = (
     "My name is {name}. Your company looks really exciting to me because "
     "[EDIT THIS: insert personal, specialized reason].\n\n"
     "I'm graduating University of Toronto from the Engineering Science program "
+    "and heading to UChicago for a Masters in Financial Mathematics. I'm "
     "looking for an internship at a startup this coming summer. I have spent "
     "4 months as a quant trader at RBC Capital Markets, and previously I spent "
     "12 months as an AI Engineer there. Before that, I was an API Tester at "
     "Scotiabank and I am working on getting my computer vision research paper published.\n"
     "I am proficient in Python, machine learning, and also familiar with Java and JS.\n\n"
-    "I am available June through August, and looking for a role where I can learn "
-    "a ton in the process.\n\n"
     "Would love to get in touch! You can learn more about me here: {linkedin}"
 )
 
@@ -210,8 +218,6 @@ ROLE: [your summary]"""
             sections.append(f"\nWHAT I'M LOOKING FOR: {user_profile.interests}")
         if user_profile.personality_notes:
             sections.append(f"\nMY STYLE: {user_profile.personality_notes}")
-        if user_profile.availability:
-            sections.append(f"\nAVAILABILITY: {user_profile.availability}")
         if user_profile.linkedin:
             sections.append(f"\nLINKEDIN URL: {user_profile.linkedin}")
         if style_notes:

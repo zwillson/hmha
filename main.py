@@ -27,7 +27,7 @@ from hmha.models import Application, ApplicationStatus
 from hmha.reviewer import MessageReviewer, ReviewDecision
 from hmha.scraper import JobScraper
 from hmha.tracker import ApplicationTracker
-from hmha.utils import random_delay, setup_logging
+from hmha.utils import setup_logging
 
 logger = logging.getLogger("hmha")
 
@@ -167,10 +167,6 @@ async def run_main(args: argparse.Namespace) -> None:
 
         for i, stub in enumerate(fresh_jobs[:total_to_process], start=1):
             try:
-                # Check for CAPTCHA
-                if await browser.check_for_captcha():
-                    await browser.handle_captcha()
-
                 # Scrape full job details
                 job = await scraper.scrape_job_detail(stub["url"])
 
@@ -200,8 +196,7 @@ async def run_main(args: argparse.Namespace) -> None:
 
                 # Summarize company/role info for display + generate message in parallel
                 try:
-                    import asyncio as _asyncio
-                    (about_summary, desc_summary), message = await _asyncio.gather(
+                    (about_summary, desc_summary), message = await asyncio.gather(
                         generator.summarize_for_display(job),
                         generator.generate_message(
                             job=job,
@@ -239,9 +234,7 @@ async def run_main(args: argparse.Namespace) -> None:
                     if application.status == ApplicationStatus.SENT:
                         sent_count += 1
 
-                # Delay between applications
-                if i < total_to_process:
-                    await random_delay(config.delay_min_seconds, config.delay_max_seconds)
+                # No artificial delay — user review time is the natural pacing
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", stub.get("url", "?"), e)
@@ -310,11 +303,11 @@ def main():
     setup_logging(verbose=args.verbose)
 
     print(r"""
-    __  __ __  ___ __  __ ___
-   / / / /  |/  // / / //   |
-  / /_/ / /|_/ // /_/ // /| |
- / __  / /  / // __  // ___ |
-/_/ /_/_/  /_//_/ /_//_/  |_|
+    __  __ ___ ___       __  __ ____
+   / / / //  |/  /      / / / //   |
+  / /_/ // /|_/ /  __  / /_/ // /| |
+ / __  // /  / /  --  / __  // ___ |
+/_/ /_//_/  /_/      /_/ /_//_/  |_|
     """)
     print("  Automated YC Work at a Startup Applicant")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")

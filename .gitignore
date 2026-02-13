@@ -11,6 +11,7 @@ venv/
 # Personal data (contains your profile + application history)
 config.yaml
 data/applications.csv
+data/dry_runs.csv
 data/session.log
 browser_data/
 

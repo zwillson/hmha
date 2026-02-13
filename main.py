@@ -110,7 +110,7 @@ async def run_main(args: argparse.Namespace) -> None:
     config_path = Path(args.config)
     config = load_config(config_path)
 
-    tracker = ApplicationTracker(csv_path=Path("data/applications.csv"))
+    tracker = ApplicationTracker(data_dir="data", dry_run=args.dry_run)
     reviewer = MessageReviewer()
     browser = BrowserManager(
         user_data_dir="browser_data",
@@ -242,14 +242,16 @@ async def run_main(args: argparse.Namespace) -> None:
 
         # Session summary
         summary = tracker.get_summary()
+        mode_label = "DRY RUN" if args.dry_run else "LIVE"
+        log_file = "data/dry_runs.csv" if args.dry_run else "data/applications.csv"
         print(f"\n{'=' * 40}")
-        print(f"  Session Complete")
+        print(f"  Session Complete ({mode_label})")
         print(f"{'=' * 40}")
         print(f"  Sent:    {summary.get('sent', 0)}")
         print(f"  Skipped: {summary.get('skipped', 0)}")
         print(f"  Errors:  {summary.get('error', 0)}")
         print(f"  Dry Run: {summary.get('dry_run', 0)}")
-        print(f"  Log:     data/applications.csv")
+        print(f"  Log:     {log_file}")
         print(f"{'=' * 40}\n")
 
     finally:

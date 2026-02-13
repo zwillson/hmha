@@ -26,8 +26,18 @@ class JobApplicant:
     async def apply_to_job(self, job: Job, message: str) -> Application:
         """Full apply flow: click Apply -> fill modal -> send.
 
+        In dry-run mode, skips all browser interaction and just records the attempt.
         Returns an Application with the result status.
         """
+        # Dry run: don't touch the browser at all
+        if self._dry_run:
+            logger.info("[DRY RUN] Would send application to %s at %s.", job.title, job.company.name)
+            return Application(
+                job=job,
+                message=message,
+                status=ApplicationStatus.DRY_RUN,
+            )
+
         # Check if already applied on the page
         if await self._is_already_applied():
             logger.info("Already applied to %s at %s.", job.title, job.company.name)
@@ -60,16 +70,6 @@ class JobApplicant:
 
         # Fill the message textarea
         await self._fill_message(message)
-
-        # Dry run: don't actually send
-        if self._dry_run:
-            logger.info("[DRY RUN] Would send application to %s.", job.company.name)
-            await self._close_modal()
-            return Application(
-                job=job,
-                message=message,
-                status=ApplicationStatus.DRY_RUN,
-            )
 
         # Click send and verify
         if await self._submit_application():
